@@ -3,8 +3,6 @@
 This is a simple bigram language model. It is a simple example of a language model that is trained to predict the next
 character given the previous character.
 """
-from turtle import forward
-
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -101,12 +99,14 @@ class Head(nn.Module):
         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))  # In PyTorch speak, the tril is a buffer
 
     def forward(self, x):
+        # Input of size (B, T, C)
+        # Output of size (B, T, head_size)
         B, T, C = x.shape
         k = self.key(x)  # (B,T,head_size)
         q = self.query(x)  # (B,T,head_size)
 
         # Compute attention score ("affinities/weights")
-        wei = q @ k.transpose(-2,-1) * k[-1]**-0.5  # (B,T,C) @ (B,C,T) --> (B,T,T)
+        wei = q @ k.transpose(-2,-1) * k.shape[-1]**-0.5  # (B,T,head_size) @ (B,head_size,T) --> (B,T,T)
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))  # (B,T,T)
         wei = F.softmax(wei, dim=-1)  #  (B,T,T)
 
@@ -122,9 +122,12 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads, head_size) -> None:
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+        self.proj = nn.Linear(n_embd, n_embd)  # <-- a linear projection of the concatenated heads
 
     def forward(self, x):
-        return torch.cat([h(x) for h in self.heads], dim=-1)  # Concat over the Channel dimension
+        out = torch.cat([h(x) for h in self.heads], dim=-1)  # Concat over the Channel dimension
+        out = self.proj(out)  # Linear projection
+        return out
 
 
 """A simple feed-forward module."""
@@ -142,9 +145,11 @@ class FeedForward(nn.Module):
     def __init__(self, n_embd) -> None:
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(n_embd, n_embd),
+            nn.Linear(n_embd, n_embd * 4),
             nn.ReLU(),
+            nn.Linear(4 * n_embd, n_embd),  # The projection layer back into the residual pathway
         )
+
 
     def forward(self, x):
         return self.net(x)
@@ -163,12 +168,13 @@ class Block(nn.Module):
         # n_embd: embedding dimensions, n_head: number of heads we want to use
         super().__init__()
         head_size = n_embd // n_head
-        self.sa = MultiHeadAttention(n_head, head_size)
-        self.ffwd = FeedForward(n_embd)
+        self.sa = MultiHeadAttention(n_head, head_size)  # Communication between tokens
+        self.ffwd = FeedForward(n_embd)  # Computation done by Feed Forward network ("Thinking on the data")
 
     def forward(self, x):
-        x = self.sa(x)
-        x = self.ffwd(x)
+        # the x + ... is the residual connection, i.e. we add the original input to the output of the self-attention and feed-forward
+        x = x + self.sa(x)
+        x = x + self.ffwd(x)
         return x
     
 
